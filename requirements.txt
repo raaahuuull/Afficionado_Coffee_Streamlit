@@ -4,5 +4,3 @@ numpy
 matplotlib
 prophet
 openpyxl
-scikit-learn
-lightgbm
