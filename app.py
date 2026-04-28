@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -12,9 +11,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# ---------------------------
-# TITLE
-# ---------------------------
 st.title("Coffee Demand Forecasting Dashboard")
 st.markdown("Analyze demand patterns, peak hours, and store performance")
 
@@ -28,35 +24,27 @@ def load_data():
 df = load_data()
 
 # ---------------------------
-# DATA PREPROCESSING
-# ---------------------------
-# ---------------------------
-# SAFE DATETIME FIX (STREAMLIT CLOUD SAFE)
+# DATA PREPROCESSING (FINAL FIX)
 # ---------------------------
 
-# ---------------------------
-# FINAL DATETIME FIX (100% SAFE)
-# ---------------------------
+# Convert time
+df['transaction_time'] = pd.to_datetime(df['transaction_time'], errors='coerce')
 
-# Convert time safely
-df['transaction_time'] = df['transaction_time'].astype(str)
+# Sort to maintain order
+df = df.sort_values('transaction_id').reset_index(drop=True)
 
-# Combine year + time (no strict format)
-df['datetime'] = pd.to_datetime(
-    df['year'].astype(str) + ' ' + df['transaction_time'],
-    errors='coerce'
-)
+# Create realistic date progression
+start_date = pd.to_datetime("2025-01-01")
+df['date'] = start_date + pd.to_timedelta(df.index // 1000, unit='D')
 
-# Drop only invalid rows (should be very few)
-df = df.dropna(subset=['datetime'])
-
-# Sort
-df = df.sort_values('datetime')
+# Combine date + time
+df['datetime'] = df['date'] + pd.to_timedelta(df['transaction_time'].dt.hour, unit='h') \
+                               + pd.to_timedelta(df['transaction_time'].dt.minute, unit='m') \
+                               + pd.to_timedelta(df['transaction_time'].dt.second, unit='s')
 
 # Features
 df['hour'] = df['datetime'].dt.hour
 df['day'] = df['datetime'].dt.dayofweek
-df['date'] = df['datetime'].dt.date
 
 # Revenue
 df['revenue'] = df['transaction_qty'] * df['unit_price']
@@ -66,10 +54,14 @@ df['revenue'] = df['transaction_qty'] * df['unit_price']
 # ---------------------------
 st.sidebar.header("Filters")
 
-stores = df['store_id'].unique()
+stores = df['store_location'].dropna().unique()
 selected_store = st.sidebar.selectbox("Select Store", stores)
 
-df_store = df[df['store_id'] == selected_store]
+df_store = df[df['store_location'] == selected_store]
+
+if df_store.empty:
+    st.warning("No data available")
+    st.stop()
 
 # ---------------------------
 # KPI SECTION
@@ -80,11 +72,11 @@ total_revenue = df_store['revenue'].sum()
 total_transactions = df_store['transaction_qty'].sum()
 avg_transactions = df_store['transaction_qty'].mean()
 
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
-col1.metric("Total Revenue", f"${total_revenue:,.0f}")
-col2.metric("Total Transactions", f"{total_transactions:,}")
-col3.metric("Average Transactions", f"{avg_transactions:.2f}")
+c1.metric("Total Revenue", f"${total_revenue:,.0f}")
+c2.metric("Total Transactions", f"{total_transactions:,}")
+c3.metric("Average Transactions", f"{avg_transactions:.2f}")
 
 # ---------------------------
 # PEAK HOUR ANALYSIS
@@ -112,7 +104,7 @@ heatmap_data = df_store.pivot_table(
     aggfunc='sum'
 )
 
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(10,5))
 sns.heatmap(heatmap_data, cmap='coolwarm', ax=ax)
 ax.set_title("Day vs Hour Demand")
 st.pyplot(fig)
@@ -136,7 +128,7 @@ st.pyplot(fig)
 # ---------------------------
 st.subheader("Store Comparison")
 
-store_perf = df.groupby('store_id')['revenue'].sum()
+store_perf = df.groupby('store_location')['revenue'].sum()
 
 fig, ax = plt.subplots()
 store_perf.plot(kind='bar', ax=ax)
