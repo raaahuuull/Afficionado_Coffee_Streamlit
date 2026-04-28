@@ -1,174 +1,178 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
+import warnings
+warnings.filterwarnings('ignore')
 
-# ---------------------------
-# PAGE CONFIG
-# ---------------------------
-st.set_page_config(
-    page_title="Coffee Demand Forecasting",
-    layout="wide"
-)
+# Safe Prophet import
+try:
+    from prophet import Prophet
+except:
+    Prophet = None
 
-st.title("Coffee Demand Forecasting Dashboard")
-st.markdown("Analyze demand patterns, peak hours, and store performance")
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.preprocessing import LabelEncoder
+import xgboost as xgb
+import lightgbm as lgb
 
-# ---------------------------
-# LOAD DATA
-# ---------------------------
-@st.cache_data
-def load_data():
-    return pd.read_excel("Afficionado Coffee Roasters.xlsx")
+# CONFIG
+st.set_page_config(page_title="Coffee Forecasting", layout="wide")
 
-df = load_data()
+PALETTE = ['#2563EB', '#16A34A', '#DC2626']
+STORES = ['Lower Manhattan', "Hell's Kitchen", 'Astoria']
 
-# ---------------------------
-# DATA PREPROCESSING (FINAL FIX)
-# ---------------------------
+# SIDEBAR
+st.sidebar.title("Coffee Dashboard")
+uploaded_file = st.sidebar.file_uploader("Upload Excel", type=["xlsx"])
 
-# Convert time
-df['transaction_time'] = pd.to_datetime(df['transaction_time'], errors='coerce')
-
-# Sort to maintain order
-df = df.sort_values('transaction_id').reset_index(drop=True)
-
-# Create realistic date progression
-start_date = pd.to_datetime("2025-01-01")
-df['date'] = start_date + pd.to_timedelta(df.index // 1000, unit='D')
-
-# Combine date + time
-df['datetime'] = df['date'] + pd.to_timedelta(df['transaction_time'].dt.hour, unit='h') \
-                               + pd.to_timedelta(df['transaction_time'].dt.minute, unit='m') \
-                               + pd.to_timedelta(df['transaction_time'].dt.second, unit='s')
-
-# Features
-df['hour'] = df['datetime'].dt.hour
-df['day'] = df['datetime'].dt.dayofweek
-
-# Revenue
-df['revenue'] = df['transaction_qty'] * df['unit_price']
-
-# ---------------------------
-# SIDEBAR FILTER
-# ---------------------------
-st.sidebar.header("Filters")
-
-stores = df['store_location'].dropna().unique()
-selected_store = st.sidebar.selectbox("Select Store", stores)
-
-df_store = df[df['store_location'] == selected_store]
-
-if df_store.empty:
-    st.warning("No data available")
+if uploaded_file is None:
+    st.warning("Upload dataset to continue")
     st.stop()
 
-# ---------------------------
+# LOAD DATA
+@st.cache_data
+def load_data(file):
+    df = pd.read_excel(file)
+
+    # Extract hour safely
+    df['hour'] = df['transaction_time'].apply(
+        lambda x: x.hour if hasattr(x, 'hour') else int(str(x).split(':')[0])
+    )
+
+    # Create fake continuous date (fix your dataset issue)
+    df = df.sort_values('transaction_id').reset_index(drop=True)
+    df['day_flag'] = (df['hour'] < df['hour'].shift(1)).astype(int)
+    df['day_index'] = df['day_flag'].cumsum()
+
+    df['date'] = pd.Timestamp('2025-01-01') + pd.to_timedelta(df['day_index'], unit='D')
+    df['revenue'] = df['transaction_qty'] * df['unit_price']
+
+    return df
+
+df = load_data(uploaded_file)
+
+# =========================
 # KPI SECTION
-# ---------------------------
-st.subheader("Key Metrics")
+# =========================
+st.title("Coffee Demand Forecasting Dashboard")
 
-total_revenue = df_store['revenue'].sum()
-total_transactions = df_store['transaction_qty'].sum()
-avg_transactions = df_store['transaction_qty'].mean()
+col1, col2, col3 = st.columns(3)
+col1.metric("Revenue", f"${df['revenue'].sum():,.0f}")
+col2.metric("Transactions", f"{len(df):,}")
+col3.metric("Avg Order", f"${df['revenue'].mean():.2f}")
 
-c1, c2, c3 = st.columns(3)
+st.markdown("---")
 
-c1.metric("Total Revenue", f"${total_revenue:,.0f}")
-c2.metric("Total Transactions", f"{total_transactions:,}")
-c3.metric("Average Transactions", f"{avg_transactions:.2f}")
-
-# ---------------------------
-# PEAK HOUR ANALYSIS
-# ---------------------------
-st.subheader("Peak Hour Analysis")
-
-hourly = df_store.groupby('hour')['transaction_qty'].sum()
-
-fig, ax = plt.subplots()
-hourly.plot(kind='bar', ax=ax)
-ax.set_title("Transactions by Hour")
-ax.set_xlabel("Hour")
-ax.set_ylabel("Transactions")
-st.pyplot(fig)
-
-# ---------------------------
-# HEATMAP
-# ---------------------------
-st.subheader("Demand Heatmap")
-
-heatmap_data = df_store.pivot_table(
-    values='transaction_qty',
-    index='day',
-    columns='hour',
-    aggfunc='sum'
-)
-
-fig, ax = plt.subplots(figsize=(10,5))
-sns.heatmap(heatmap_data, cmap='coolwarm', ax=ax)
-ax.set_title("Day vs Hour Demand")
-st.pyplot(fig)
-
-# ---------------------------
-# DAILY REVENUE TREND
-# ---------------------------
+# =========================
+# DAILY TREND
+# =========================
 st.subheader("Daily Revenue Trend")
 
-daily_revenue = df_store.groupby('date')['revenue'].sum()
+daily = df.groupby(['date', 'store_location'])['revenue'].sum().reset_index()
+
+if not daily.empty:
+    fig = px.line(daily, x='date', y='revenue', color='store_location')
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.warning("No daily data available")
+
+# =========================
+# PEAK HOURS
+# =========================
+st.subheader("Peak Hour Analysis")
+
+hourly = df.groupby('hour')['transaction_id'].count()
 
 fig, ax = plt.subplots()
-daily_revenue.plot(ax=ax)
-ax.set_title("Daily Revenue")
-ax.set_xlabel("Date")
-ax.set_ylabel("Revenue")
-st.pyplot(fig)
 
-# ---------------------------
-# STORE COMPARISON
-# ---------------------------
-st.subheader("Store Comparison")
+if hourly.empty:
+    st.warning("No hourly data available")
+else:
+    hourly.plot(kind='bar', ax=ax, color='skyblue')
+    ax.axhline(hourly.mean(), color='red', linestyle='--')
+    ax.set_title("Transactions by Hour")
+    st.pyplot(fig)
 
-store_perf = df.groupby('store_location')['revenue'].sum()
+# =========================
+# FEATURE ENGINEERING
+# =========================
+daily_ts = df.groupby(['date', 'store_location'])['revenue'].sum().reset_index()
 
-fig, ax = plt.subplots()
-store_perf.plot(kind='bar', ax=ax)
-ax.set_title("Revenue by Store")
-st.pyplot(fig)
+def add_features(df):
+    df = df.sort_values(['store_location', 'date'])
+    g = df.groupby('store_location')['revenue']
 
-# ---------------------------
-# FORECAST (MOVING AVERAGE)
-# ---------------------------
-st.subheader("Demand Forecast (7-Day Moving Average)")
+    df['lag_1'] = g.shift(1)
+    df['lag_7'] = g.shift(7)
+    df['rolling'] = g.transform(lambda x: x.shift(1).rolling(7).mean())
 
-daily_qty = df_store.groupby('date')['transaction_qty'].sum()
-rolling = daily_qty.rolling(7).mean()
+    df['day'] = df['date'].dt.dayofweek
+    df['is_weekend'] = df['day'].isin([5,6]).astype(int)
 
-fig, ax = plt.subplots()
-daily_qty.plot(label="Actual", ax=ax)
-rolling.plot(label="7-Day Average", ax=ax)
-ax.legend()
-ax.set_title("Forecast vs Actual")
-st.pyplot(fig)
+    le = LabelEncoder()
+    df['store_enc'] = le.fit_transform(df['store_location'])
 
-# ---------------------------
-# SCENARIO ANALYSIS
-# ---------------------------
-st.subheader("Scenario Analysis")
+    return df.dropna()
 
-base = rolling.dropna()
-high = base * 1.2
-low = base * 0.8
+daily_fe = add_features(daily_ts)
 
-fig, ax = plt.subplots()
-base.plot(label="Base", ax=ax)
-high.plot(label="High (+20%)", linestyle='--', ax=ax)
-low.plot(label="Low (-20%)", linestyle='--', ax=ax)
-ax.legend()
-ax.set_title("Scenario Forecast")
-st.pyplot(fig)
+# =========================
+# MODEL TRAINING BUTTON
+# =========================
+st.subheader("Model Training")
 
-# ---------------------------
-# FOOTER
-# ---------------------------
-st.markdown("---")
-st.markdown("Built using Streamlit")
+if st.button("Run Models"):
+
+    train = daily_fe.iloc[:-30]
+    test = daily_fe.iloc[-30:]
+
+    X_train = train[['lag_1','lag_7','rolling','day','is_weekend','store_enc']]
+    y_train = train['revenue']
+    X_test = test[['lag_1','lag_7','rolling','day','is_weekend','store_enc']]
+    y_test = test['revenue']
+
+    # LightGBM
+    model = lgb.LGBMRegressor()
+    model.fit(X_train, y_train)
+
+    preds = model.predict(X_test)
+
+    mae = mean_absolute_error(y_test, preds)
+    rmse = np.sqrt(mean_squared_error(y_test, preds))
+
+    st.write("MAE:", round(mae,2))
+    st.write("RMSE:", round(rmse,2))
+
+    # Plot predictions
+    fig2, ax2 = plt.subplots()
+    ax2.plot(y_test.values, label="Actual")
+    ax2.plot(preds, label="Predicted")
+    ax2.legend()
+    st.pyplot(fig2)
+
+# =========================
+# PROPHET (OPTIONAL)
+# =========================
+if Prophet is not None:
+    st.subheader("Prophet Forecast")
+
+    store = st.selectbox("Select Store", STORES)
+    temp = daily_ts[daily_ts['store_location']==store]
+
+    if not temp.empty:
+        p_df = temp.rename(columns={'date':'ds','revenue':'y'})
+        m = Prophet()
+        m.fit(p_df)
+
+        future = m.make_future_dataframe(periods=30)
+        forecast = m.predict(future)
+
+        fig3 = px.line(forecast, x='ds', y='yhat', title="Forecast")
+        st.plotly_chart(fig3, use_container_width=True)
+else:
+    st.warning("Prophet not available in this deployment")
