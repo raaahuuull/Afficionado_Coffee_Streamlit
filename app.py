@@ -30,18 +30,41 @@ df = load_data()
 # ---------------------------
 # DATA PREPROCESSING
 # ---------------------------
-df['transaction_time'] = pd.to_datetime(df['transaction_time'], format='%H:%M:%S')
+# ---------------------------
+# SAFE DATETIME FIX (STREAMLIT CLOUD SAFE)
+# ---------------------------
 
-df['datetime'] = pd.to_datetime(
-    df['year'].astype(str) + ' ' + df['transaction_time'].astype(str)
+# ---------------------------
+# FINAL DATETIME FIX (100% SAFE)
+# ---------------------------
+
+# Convert time safely
+df['transaction_time'] = pd.to_datetime(df['transaction_time'], errors='coerce')
+
+# Create a proper DATE column (use Jan 1 as base)
+df['date'] = pd.to_datetime(df['year'], format='%Y')
+
+# Combine date + time
+df['datetime'] = df['date'] + pd.to_timedelta(
+    df['transaction_time'].dt.hour, unit='h'
+) + pd.to_timedelta(
+    df['transaction_time'].dt.minute, unit='m'
+) + pd.to_timedelta(
+    df['transaction_time'].dt.second, unit='s'
 )
 
+# Drop bad rows
+df = df.dropna(subset=['datetime'])
+
+# Sort
 df = df.sort_values('datetime')
 
+# Extract features
 df['hour'] = df['datetime'].dt.hour
 df['day'] = df['datetime'].dt.dayofweek
 df['date'] = df['datetime'].dt.date
 
+# Revenue
 df['revenue'] = df['transaction_qty'] * df['unit_price']
 
 # ---------------------------
