@@ -39,27 +39,21 @@ df = load_data()
 # ---------------------------
 
 # Convert time safely
-df['transaction_time'] = pd.to_datetime(df['transaction_time'], errors='coerce')
+df['transaction_time'] = df['transaction_time'].astype(str)
 
-# Create a proper DATE column (use Jan 1 as base)
-df['date'] = pd.to_datetime(df['year'], format='%Y')
-
-# Combine date + time
-df['datetime'] = df['date'] + pd.to_timedelta(
-    df['transaction_time'].dt.hour, unit='h'
-) + pd.to_timedelta(
-    df['transaction_time'].dt.minute, unit='m'
-) + pd.to_timedelta(
-    df['transaction_time'].dt.second, unit='s'
+# Combine year + time (no strict format)
+df['datetime'] = pd.to_datetime(
+    df['year'].astype(str) + ' ' + df['transaction_time'],
+    errors='coerce'
 )
 
-# Drop bad rows
+# Drop only invalid rows (should be very few)
 df = df.dropna(subset=['datetime'])
 
 # Sort
 df = df.sort_values('datetime')
 
-# Extract features
+# Features
 df['hour'] = df['datetime'].dt.hour
 df['day'] = df['datetime'].dt.dayofweek
 df['date'] = df['datetime'].dt.date
