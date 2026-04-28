@@ -2,229 +2,220 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-import lightgbm as lgb
+from prophet import Prophet
 
-# Optional Prophet
-try:
-    from prophet import Prophet
-except:
-    Prophet = None
+st.set_page_config(page_title="Coffee Dashboard", layout="wide")
 
-st.set_page_config(page_title="Coffee Demand Forecasting", layout="wide")
-
-# ---------------------------
-# CONFIG
-# ---------------------------
-GITHUB_DATA_URL = "https://raw.githubusercontent.com/raaahuuull/Afficionado_Coffee_Streamlit/main/Afficionado%20Coffee%20Roasters.xlsx"
-
-# ---------------------------
-# LOAD DATA (HYBRID)
-# ---------------------------
+# -----------------------------
+# SIDEBAR
+# -----------------------------
 st.sidebar.title("Coffee Dashboard")
 
 use_github = st.sidebar.checkbox("Use GitHub Dataset (Default)", value=True)
 uploaded_file = st.sidebar.file_uploader("Upload Excel", type=["xlsx"])
 
+GITHUB_URL = "https://raw.githubusercontent.com/raaahuuull/Afficionado_Coffee_Streamlit/main/Afficionado%20Coffee%20Roasters.xlsx"
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
 @st.cache_data
-def load_data(source):
-    df = pd.read_excel(source)
+def load_github_data():
+    return pd.read_excel(GITHUB_URL)
 
-    # Extract hour safely
-    df['hour'] = df['transaction_time'].apply(
-        lambda x: x.hour if hasattr(x, 'hour') else int(str(x).split(':')[0])
-    )
+df_raw = None
 
-    # Create realistic timeline (important fix)
-    df = df.sort_values('transaction_id').reset_index(drop=True)
-    df['day_flag'] = (df['hour'] < df['hour'].shift(1)).astype(int)
-    df['day_index'] = df['day_flag'].cumsum()
-
-    df['date'] = pd.Timestamp('2025-01-01') + pd.to_timedelta(df['day_index'], unit='D')
-
-    # Revenue
-    df['revenue'] = df['transaction_qty'] * df['unit_price']
-
-    return df
-
-# Decide data source
 if use_github:
     try:
-        df = load_data(GITHUB_DATA_URL)
+        df_raw = load_github_data()
         st.sidebar.success("Loaded from GitHub")
     except:
-        st.sidebar.error("GitHub load failed. Upload file.")
-        st.stop()
-else:
-    if uploaded_file is None:
-        st.warning("Upload dataset to continue")
-        st.stop()
-    df = load_data(uploaded_file)
+        st.sidebar.error("GitHub load failed")
 
-# ---------------------------
-# KPIs
-# ---------------------------
-st.title("Coffee Demand Forecasting Dashboard")
+if uploaded_file:
+    df_raw = pd.read_excel(uploaded_file)
+    st.sidebar.success("Uploaded file loaded")
 
-c1, c2, c3, c4 = st.columns(4)
+if df_raw is None:
+    st.warning("Please upload dataset or enable GitHub option")
+    st.stop()
 
-c1.metric("Revenue", f"${df['revenue'].sum():,.0f}")
-c2.metric("Transactions", f"{len(df):,}")
-c3.metric("Avg Order", f"${df['revenue'].mean():.2f}")
-peak_hour = df.groupby('hour')['transaction_qty'].sum().idxmax()
-c4.metric("Peak Hour", f"{peak_hour}:00")
+# -----------------------------
+# DATA CLEANING
+# -----------------------------
+df = df_raw.copy()
 
-st.markdown("---")
+df['transaction_time'] = pd.to_datetime(df['transaction_time'], errors='coerce')
+df['time_str'] = df['transaction_time'].dt.strftime('%H:%M:%S')
 
-# ---------------------------
-# DAILY TREND
-# ---------------------------
-st.subheader("Daily Revenue Trend")
-
-daily = df.groupby(['date','store_location'])['revenue'].sum().reset_index()
-
-if not daily.empty:
-    fig = px.line(daily, x='date', y='revenue', color='store_location')
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("No daily data")
-
-# ---------------------------
-# PEAK HOUR ANALYSIS
-# ---------------------------
-st.subheader("Peak Hour Analysis")
-
-hourly = df.groupby('hour')['transaction_qty'].sum()
-
-fig, ax = plt.subplots()
-
-if hourly.empty:
-    st.warning("No hourly data")
-else:
-    hourly.plot(kind='bar', ax=ax, color='skyblue')
-    ax.axhline(hourly.mean(), color='red', linestyle='--')
-    ax.set_title("Transactions by Hour")
-    st.pyplot(fig)
-
-# ---------------------------
-# HEATMAP
-# ---------------------------
-st.subheader("Demand Heatmap")
-
-heatmap = df.pivot_table(
-    values='transaction_qty',
-    index='store_location',
-    columns='hour',
-    aggfunc='sum'
+df['datetime'] = pd.to_datetime(
+    df['year'].astype(str) + ' ' + df['time_str'],
+    format='%Y %H:%M:%S',
+    errors='coerce'
 )
 
-if not heatmap.empty:
-    fig, ax = plt.subplots(figsize=(10,4))
-    sns.heatmap(heatmap, cmap='coolwarm', ax=ax)
-    st.pyplot(fig)
+df = df.dropna(subset=['datetime'])
 
-# ---------------------------
-# PEAK DAYS
-# ---------------------------
-st.subheader("Peak Demand Days")
+df['hour'] = df['datetime'].dt.hour
+df['date'] = df['datetime'].dt.date
+df['revenue'] = df['transaction_qty'] * df['unit_price']
 
-daily_total = df.groupby('date')['revenue'].sum()
-threshold = daily_total.quantile(0.9)
-peak_days = daily_total[daily_total > threshold]
+# -----------------------------
+# TITLE
+# -----------------------------
+st.title("Coffee Demand Forecasting Dashboard")
+st.caption("Analytics + Forecasting + Machine Learning")
 
-st.write(f"Top {len(peak_days)} Peak Days")
+# -----------------------------
+# METRICS
+# -----------------------------
+total_revenue = df['revenue'].sum()
+total_transactions = len(df)
+avg_order = df['revenue'].mean()
+peak_hour = df.groupby('hour').size().idxmax()
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Revenue", f"${total_revenue:,.0f}")
+c2.metric("Transactions", f"{total_transactions:,}")
+c3.metric("Avg Order", f"${avg_order:.2f}")
+c4.metric("Peak Hour", f"{peak_hour}:00")
+
+# -----------------------------
+# DAILY TREND
+# -----------------------------
+st.subheader("Daily Revenue Trend")
+
+daily = df.groupby(['date', 'store_location'])['revenue'].sum().reset_index()
+pivot_daily = daily.pivot(index='date', columns='store_location', values='revenue')
+
+st.line_chart(pivot_daily)
+
+# -----------------------------
+# PEAK HOUR ANALYSIS
+# -----------------------------
+st.subheader("Peak Hour Analysis")
+
+hourly = df.groupby('hour').size()
+hourly = hourly.reindex(range(24), fill_value=0)
 
 fig, ax = plt.subplots()
-daily_total.plot(ax=ax)
-ax.axhline(threshold, color='red', linestyle='--')
+ax.bar(hourly.index, hourly.values)
+ax.axhline(hourly.mean(), linestyle='--', color='red')
+ax.set_xlabel("Hour")
+ax.set_ylabel("Transactions")
+
 st.pyplot(fig)
 
-# ---------------------------
-# FEATURE ENGINEERING
-# ---------------------------
-daily_ts = df.groupby(['date','store_location'])['revenue'].sum().reset_index()
+# -----------------------------
+# HEATMAP
+# -----------------------------
+st.subheader("Demand Heatmap")
 
-def add_features(df):
-    df = df.sort_values(['store_location','date'])
-    g = df.groupby('store_location')['revenue']
+heatmap = df.groupby(['store_location', 'hour']).size().unstack(fill_value=0)
 
-    df['lag_1'] = g.shift(1)
-    df['lag_7'] = g.shift(7)
-    df['rolling_7'] = g.transform(lambda x: x.shift(1).rolling(7).mean())
-    df['rolling_14'] = g.transform(lambda x: x.shift(1).rolling(14).mean())
+fig2, ax2 = plt.subplots()
+im = ax2.imshow(heatmap, aspect='auto')
 
-    df['day'] = df['date'].dt.dayofweek
-    df['is_weekend'] = df['day'].isin([5,6]).astype(int)
+ax2.set_yticks(range(len(heatmap.index)))
+ax2.set_yticklabels(heatmap.index)
 
-    le = LabelEncoder()
-    df['store_enc'] = le.fit_transform(df['store_location'])
+ax2.set_xticks(range(24))
+ax2.set_xticklabels(range(24))
 
-    return df.dropna()
+plt.colorbar(im)
+st.pyplot(fig2)
 
-daily_fe = add_features(daily_ts)
-
-# ---------------------------
-# MODEL TRAINING
-# ---------------------------
-st.subheader("Model Performance")
-
-if st.button("Run Models"):
-
-    train = daily_fe.iloc[:-30]
-    test = daily_fe.iloc[-30:]
-
-    X_train = train[['lag_1','lag_7','rolling_7','rolling_14','day','is_weekend','store_enc']]
-    y_train = train['revenue']
-
-    X_test = test[['lag_1','lag_7','rolling_7','rolling_14','day','is_weekend','store_enc']]
-    y_test = test['revenue']
-
-    model = lgb.LGBMRegressor()
-    model.fit(X_train, y_train)
-
-    preds = model.predict(X_test)
-
-    mae = mean_absolute_error(y_test, preds)
-    rmse = np.sqrt(mean_squared_error(y_test, preds))
-
-    st.write(f"MAE: {mae:.2f}")
-    st.write(f"RMSE: {rmse:.2f}")
-
-    fig, ax = plt.subplots()
-    ax.plot(y_test.values, label="Actual")
-    ax.plot(preds, label="Predicted")
-    ax.legend()
-    st.pyplot(fig)
-
-# ---------------------------
+# -----------------------------
 # PROPHET FORECAST
-# ---------------------------
-if Prophet is not None:
-    st.subheader("Prophet Forecast")
+# -----------------------------
+st.subheader("Prophet Forecast")
 
-    store = st.selectbox("Select Store", df['store_location'].unique())
-    temp = daily_ts[daily_ts['store_location'] == store]
+forecast_days = st.slider("Forecast Days", 7, 60, 30)
 
-    if not temp.empty:
-        p_df = temp.rename(columns={'date':'ds','revenue':'y'})
+store_list = df['store_location'].unique()
+selected_store = st.selectbox("Select Store", store_list)
 
-        model = Prophet(
-            daily_seasonality=True,
-            weekly_seasonality=True,
-            seasonality_mode='multiplicative'
-        )
+df_store = df[df['store_location'] == selected_store]
 
-        model.fit(p_df)
-        future = model.make_future_dataframe(periods=30)
-        forecast = model.predict(future)
+daily_store = df_store.groupby('date')['revenue'].sum().reset_index()
+daily_store.columns = ['ds', 'y']
 
-        fig = px.line(forecast, x='ds', y='yhat', title="Forecast")
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("Prophet not available")
+model = Prophet(daily_seasonality=True, weekly_seasonality=True)
+model.fit(daily_store)
 
-st.markdown("---")
-st.caption("Data-driven demand forecasting dashboard")
+future = model.make_future_dataframe(periods=forecast_days)
+forecast = model.predict(future)
+
+fig3, ax3 = plt.subplots()
+ax3.plot(forecast['ds'], forecast['yhat'], label='Forecast')
+ax3.fill_between(
+    forecast['ds'],
+    forecast['yhat_lower'],
+    forecast['yhat_upper'],
+    alpha=0.2
+)
+ax3.legend()
+
+st.pyplot(fig3)
+
+# -----------------------------
+# MODEL PERFORMANCE (PROPHET)
+# -----------------------------
+st.subheader("Prophet Performance")
+
+actual = daily_store['y'].values[-30:]
+pred = forecast['yhat'].values[-30:]
+
+mae = np.mean(np.abs(actual - pred))
+rmse = np.sqrt(np.mean((actual - pred)**2))
+
+st.write(f"MAE: {mae:.2f}")
+st.write(f"RMSE: {rmse:.2f}")
+
+# -----------------------------
+# LIGHTGBM MODEL
+# -----------------------------
+st.subheader("Machine Learning Model (LightGBM)")
+
+try:
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import mean_absolute_error, mean_squared_error
+    import lightgbm as lgb
+
+    df_ml = df.copy()
+
+    le1 = LabelEncoder()
+    le2 = LabelEncoder()
+
+    df_ml['store_enc'] = le1.fit_transform(df_ml['store_location'])
+    df_ml['product_enc'] = le2.fit_transform(df_ml['product_category'])
+
+    X = df_ml[['hour', 'store_enc', 'product_enc', 'unit_price']]
+    y = df_ml['revenue']
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=False
+    )
+
+    model_lgb = lgb.LGBMRegressor(n_estimators=100, learning_rate=0.05)
+    model_lgb.fit(X_train, y_train)
+
+    y_pred = model_lgb.predict(X_test)
+
+    mae_ml = mean_absolute_error(y_test, y_pred)
+    rmse_ml = np.sqrt(mean_squared_error(y_test, y_pred))
+
+    c1, c2 = st.columns(2)
+    c1.metric("ML MAE", f"{mae_ml:.2f}")
+    c2.metric("ML RMSE", f"{rmse_ml:.2f}")
+
+    fig4, ax4 = plt.subplots()
+    ax4.plot(y_test.values[:100], label="Actual")
+    ax4.plot(y_pred[:100], label="Predicted")
+    ax4.legend()
+
+    st.pyplot(fig4)
+
+except:
+    st.warning("LightGBM not available or failed to run.")
